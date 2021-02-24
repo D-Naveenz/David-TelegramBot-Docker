@@ -1,0 +1,76 @@
+#!/bin/bash
+
+DIR=$(echo $PWD | sed 's/\/scripts//')  # Strip off scripts/ dir if we're in there
+cd $DIR
+
+if [ -e "./variables.env" ]; then
+  set -a; . ./variables.env
+fi
+
+if [[ -z "$DOCKER_BUILD_DATE" && -x "$(command -v git)" ]]; then
+    DOCKER_VCS_REF=$(git show -s --format=%h HEAD)
+    DOCKER_BUILD_DATE=$(git show -s --format=%ci HEAD)
+fi
+
+if ! [ -z "$DOCKER_BUILD_DATE" ]; then
+    echo ""
+    echo "Build date ($DOCKER_BUILD_DATE) VCS ref ($DOCKER_VCS_REF)"
+fi
+
+if [ -z "$DISABLE_SSL" ]; then
+  ./scripts/generate_ssl_cert.sh
+  SSL_PARAMS="--keyfile ../certs/key.pem --certfile ../certs/cert.pem"
+fi
+
+
+# Setup default port
+if [ -z "$PORT" ]; then
+  PORT=8443
+fi
+
+if [[ -z "$HOST" || -z "$TOKEN" || -z "$SOURCE_TOKEN" ]]; then
+  echo ""
+  echo "You MUST launch this docker container with at least the follow env variables:"
+  echo ""
+  echo "  HOST (Your FQDN that Telegram connects to for webhook events)"
+  echo "  TOKEN (Your telegram generated token from BotFather)"
+  echo "  SOURCE_TOKEN (A token of your choosing that your source connects to to relay)"
+  echo ""
+  echo "i.e. HOST=example.com TOKEN=ASHFL:KU296_DSAFKLAH90 SOURCE_TOKEN=ABC1234"
+  echo "     Your source would send JSON payloads to https://example.com:8443/ABC1234"
+  echo "     Telegram would send webhook events to https://example.com:8443/ASHFL:KU296_DSAFKLAH90"
+  echo ""
+  exit
+fi
+
+# Display outputs
+printf "----------------------------------------------------------------------"
+printf "                      David Telegram Bot v1.01"
+printf "----------------------------------------------------------------------"
+printf ""
+
+# Extract host id address
+hostip=$(ip route show | awk '/default/ {print $3}')
+echo "Host Ip address: $hostip"
+
+printf ""
+echo "Send POST requests to: https://$HOST:$PORT/relay/$SOURCE_TOKEN"
+echo ""
+echo "  Test using curl:"
+echo "  $ curl -k -X POST -d '{\"message\": \"Hello world!\"}' https://$HOST:$PORT/relay/$SOURCE_TOKEN"
+echo ""
+
+gunicorn \
+  -w 1 \
+  -k gevent \
+  $SSL_PARAMS \
+  -e SOURCE_TOKEN=$SOURCE_TOKEN \
+  -e DISABLE_SSL=$DISABLE_SSL \
+  -e HOST=$HOST \
+  -e CERT=../certs/cert.pem \
+  -e TOKEN=$TOKEN \
+  -e "DOCKER_BUILD_DATE=$DOCKER_BUILD_DATE" \
+  -e DOCKER_VCS_REF=$DOCKER_VCS_REF \
+  -b 0.0.0.0:$PORT \
+  --access-logfile "/usr/src/app/logs/access.log" \
+  launcher:app
